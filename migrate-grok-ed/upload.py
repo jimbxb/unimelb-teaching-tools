@@ -23,6 +23,12 @@ Functions:
         slides in the lesson that match the target slide_title, as this interferes with the creation of lessons.
     create_all_modules(session: edAPI): Creates all modules by iterating through the output/grok_exercises directory.
     delete_all_modules(session: edAPI): Deletes all modules by iterating through the lessons in Ed. Used for cleaning in a testing environment.
+    set_lesson_commands(session: edAPI, lesson: edAPI.Lesson, build_command: Optional[str], run_command: Optional[str], terminal_command: Optional[str]):
+        Given the lesson - set its build, run and terminal commands.
+    set_all_lesson_commands(session: edAPI, check_function: Callable[[edAPI.lesson], bool], build_mapping_function: Callable[[edAPI.lesson], Optional[str]],
+        run_mapping_function: Callable[[edAPI.lesson], Optional[str]], terminal_mapping_function: Callable[[edAPI.lesson], Optional[str]]):
+        Takes a session, runs each lesson through the check_function, if the check_function returns True, then the 
+        mapping function is called on that lesson to set the run command for all slides to that callable.
     main(): Main function to initiate the session and create all modules.
 """
 import requests
@@ -31,7 +37,7 @@ import rich
 
 # replace print with rich.print
 from rich import print
-from typing import Iterable, List, Any, Mapping, Optional, Dict
+from typing import Iterable, List, Any, Mapping, Optional, Dict, Callable
 from typing import ClassVar, Type
 from datetime import datetime
 import challenge
@@ -543,6 +549,7 @@ class edAPI:
         grade_passback_scale_to: Optional[int | None] = None
         password_one_time: Optional[bool | None] = None
         slide_marks_summary: Optional[List[slide.SlideSummaryDataClass] | None] = None
+        is_grade_passback_available: Optional[bool | None] = None
 
         def create(self):
             return super().create(f"courses/{self.class_id}/{self.url_suffix}")
@@ -1147,7 +1154,7 @@ def create_challenge(folder: Path, session: edAPI, lesson: edAPI.Lesson, problem
         log.info(f)
         grok_test = json.loads(grok_problem['tests'])
         grok_test = grok_test['tests'][int(f.stem)]
-        relative_dir = f.relative_to(folder / "tests").parent
+        relative_dir = f.relative_to(folder / "tests")
         testcase = challenge.Testcase(
             None,
             None,
@@ -1441,7 +1448,98 @@ def delete_all_modules(session: edAPI):
         session.lesson(lesson.id).delete()
 
 
+def set_lesson_commands(session: edAPI, lesson: edAPI.Lesson, build_command: Optional[str], run_command: Optional[str], terminal_command: Optional[str]):
+    """
+    Given the lesson - set its build, run and terminal commands.
+    """
+    lesson = session.lesson(lesson.id).get()
+    if not lesson.slides:
+        # No slides, nothing to do.
+        log.warning(f"No slides in lesson {lesson.title}")
+        return
+    for slide in lesson.slides:
+        if slide.type == "code":
+            current_slide = session.slide(slide.id).get()
+            challenge = current_slide.get_challenge()
+
+            if build_command:
+                challenge.settings["build_command"] = build_command
+                challenge.tickets["run_standard"]["build_command"] = build_command
+                log.info(f"Updating {slide.title}'s build command to {build_command}")
+                challenge.save()
+            if run_command:
+                challenge.settings["run_command"] = run_command
+                challenge.settings["check_command"] = run_command
+                challenge.tickets["run_standard"]["run_command"] = run_command
+                log.info(f"Updating {slide.title}'s run and check command to {run_command}")
+            if terminal_command:
+                challenge.settings["terminal_command"] = terminal_command
+                log.info(f"Updating {slide.title}'s terminal command to {terminal_command}")
+            challenge.save()
+            current_slide.save()
+    lesson.save()
+
+
+def set_all_lesson_commands(session: edAPI, check_function: Callable[[edAPI.lesson], bool], 
+    build_mapping_function: Callable[[edAPI.lesson], Optional[str]],
+    run_mapping_function: Callable[[edAPI.lesson], Optional[str]],
+    terminal_mapping_function: Callable[[edAPI.lesson], Optional[str]]
+    ):
+    """
+    Takes a session, runs each lesson through the check_function, if the check_function returns True, then the 
+    mapping function is called on that lesson to set the run command for all slides to that callable.
+    """
+    lessons, modules = session.lesson().get_all()
+    existing_modules = defaultdict(list)
+    for lesson in lessons:
+        if check_function(lesson):
+            log.info(f"Applying update to run commands for {lesson.title}")
+            set_lesson_commands(session, lesson, build_mapping_function(lesson), run_mapping_function(lesson), terminal_mapping_function(lesson))
+
+
 def main():
+
+    # Example checks & update steps.
+    def is_haskell(lesson: edAPI.Lesson) -> bool:
+        HASKELL_WEEKS = [5, 6, 7, 8, 9, 10, 11]
+        HASKELL_WEEK_SET = ["Week {}".format(i) for i in HASKELL_WEEKS]
+        HASKELL_WORKSHOP_SET = ["Workshop {}".format(i) for i in HASKELL_WEEKS]
+        HASKELL_PHRASES = HASKELL_WEEK_SET + HASKELL_WORKSHOP_SET
+        for phrase in HASKELL_PHRASES:
+            if phrase in lesson.title:
+                return True
+        return False
+
+    def haskell_build(lesson: edAPI.Lesson) -> Optional[str]:
+        return "ghc Main.hs"
+
+    def haskell_run(lesson: edAPI.Lesson) -> Optional[str]:
+        return "./Main"
+
+    def haskell_terminal(lesson: edAPI.Lesson) -> Optional[str]:
+        return "ghci"
+
+    def is_prolog(lesson: edAPI.Lesson) -> bool:
+        PROLOG_WEEKS = [1, 2, 3, 4]
+        PROLOG_WEEK_SET = ["Week {}".format(i) for i in PROLOG_WEEKS]
+        PROLOG_WORKSHOP_SET = ["Workshop {}".format(i) for i in PROLOG_WEEKS]
+        PROLOG_PHRASES = PROLOG_WEEK_SET + PROLOG_WORKSHOP_SET
+        for phrase in PROLOG_PHRASES:
+            if phrase in lesson.title:
+                return True
+        return False
+
+    def prolog_build(lesson: edAPI.Lesson) -> Optional[str]:
+        """
+        Keep using any existing build command.
+        """
+        return None
+
+    def prolog_run(lesson: edAPI.Lesson) -> Optional[str]:
+        return "swipl -l main.pl"
+
+    def prolog_terminal(lesson: edAPI.Lesson) -> Optional[str]:
+        return "swipl -l main.pl"
 
     session = edAPI().new(
         f"https://edstem.org/api", config.get("ED","ed_token"), class_id=config.get("ED", "ed_course_id")
@@ -1453,6 +1551,10 @@ def main():
     create_all_modules(session)
     # lesson: edAPI.lesson = session.lesson(31193).get()
     # create_challenge(Path("output/grok_exercises/Ex10.x1"), session, lesson)
+
+    # After new modules are complete, run haskell & prolog checks.
+    # set_all_lesson_commands(session, is_haskell, haskell_build, haskell_run, haskell_terminal)
+    # set_all_lesson_commands(session, is_prolog, prolog_build, prolog_run, prolog_terminal)
 
 
 main()
