@@ -19,12 +19,13 @@ import System.Timeout (timeout)
 import Text.Printf (printf)
 import Text.Read (readMaybe)
 
+-- The suite of tests to run
 tests :: [Test]
 tests =
   [ validationTest "Validation test" (expected "0"),
     test "Real test" (scored "1")
   ]
-  where 
+  where
     compile i = compileHaskell (dir i </> "Main.hs") (exe i)
     -- compile i = compileProlog (dir i </> "main.pl") (exe i)
     expected i = compile i $ timed testTime $ runExpected (dir i </> "expected.txt") (exe i) []
@@ -32,30 +33,25 @@ tests =
     dir i = "." </> i
     exe i = dir i </> "out"
 
+-- How long to run each test for, if timed
 testTime :: Double
 testTime = 5.0
 
+-- Default score for a test
 testScore :: Double
 testScore = 1.0
 
+-- Default pass threshold for a test, 50%
 testThreshold :: Double
 testThreshold = testScore / 2
 
+-- Add a dummy test to ensure total score is positive and doesn't exceed max, or not
 capTestScores :: Bool
 capTestScores = True
 
+-- Privacy of non-validation tests
 testPrivacy :: Privacy
 testPrivacy = Private
-
-
-main :: IO ()
-main = do
-  results <- normaliseResults capTestScores . zip tests <$> mapM runTest tests
-  putStrLn $ json [("testcases", show results)]
-
--------------------------------------------------------------------------------
--- YOU PROBABLY DONT NEED TO MODIFY ANYTHING BELOW HERE
--------------------------------------------------------------------------------
 
 -- opinionated test constuctors
 test :: String -> IO Feedback -> Test
@@ -64,16 +60,37 @@ test name runner = Test name testPrivacy Visible runner 0.0 testScore testThresh
 validationTest :: String -> IO Feedback -> Test
 validationTest name runner = Test name Public Visible runner 0.0 0.0 0.0 False True
 
+-- Entry-point. Run all tests and output in Ed's custom test JSON format
+main :: IO ()
+main = do
+  results <-
+    normaliseResults capTestScores . zip tests
+      <$> mapM (handled False "The testing code encountered an exception." . runner) tests
+  putStrLn $ json [("testcases", show results)]
+
+-------------------------------------------------------------------------------
+-- YOU PROBABLY DONT NEED TO MODIFY ANYTHING BELOW HERE
+-------------------------------------------------------------------------------
+
 data Test
   = Test
-  { name :: String,
+  { -- | The name of the test
+    name :: String,
+    -- | The privacy of the test
     privacy :: Privacy,
+    -- | The viibility of the test
     visibility :: Visibility,
+    -- | How to run the test
     runner :: IO Feedback,
+    -- | Minimum score for the test
     minScore :: Double,
+    -- | Maximum score for the test
     maxScore :: Double,
+    -- | Score required to pass the test
     passThreshold :: Double,
+    -- | Scale test score by maxScore? Useful for "scored" tests
     scale :: Bool,
+    -- | Clamp the score between minScore and maxScore
     doClamp :: Bool
   }
 
@@ -88,17 +105,25 @@ data Privacy
   deriving (Eq)
 
 data Feedback = Feedback
-  { ok :: Bool,
+  { -- | Did the test case encounter an unexpected error?
+    ok :: Bool,
+    -- | Score of the test
     score :: Double,
+    -- | Feedback to give to students
     feedback :: String,
+    -- | Observed output of this test
     observedOutput :: Maybe String,
+    -- | Expected output of this test
     expectedOutput :: Maybe String
   }
 
 data Result
   = Result
-  { passed :: Bool,
+  { -- | Did this test pass?
+    passed :: Bool,
+    -- | Test case that was run
     testcase :: Test,
+    -- | Feedback from running the test
     output :: Feedback
   }
 
@@ -151,10 +176,6 @@ normaliseResults capScore = adjust . map normScore
         totalScore = sum $ map (score . output) results
         totalMaxScore = sum $ map (maxScore . testcase) results
 
-runTest :: Test -> IO Feedback
-runTest Test {runner} =
-  handled False "The testing code encountered an exception." runner
-
 -- \* Compile tests
 
 compile :: FilePath -> [String] -> IO Feedback -> IO Feedback
@@ -182,7 +203,7 @@ runFeedback feedback exe args =
       then feedback out
       else return $ errorFeedback True "Program exitted with a non-zero exit code." $ Just $ out ++ "\n" ++ err
 
--- Suceed if program executes sucessfully, with exit code 0
+-- Succeed if program executes sucessfully, with exit code 0
 runSimple :: FilePath -> [String] -> IO Feedback
 runSimple = runFeedback (const $ return $ successFeedback "Code ran successfully." infinity)
 
@@ -205,11 +226,11 @@ runScored =
           _ -> errorFeedback False "Unknown error parsing output." $ Just out
     )
 
--- limit the time for some feedback, in seconds
+-- Limit the time for some feedback, in seconds
 timed :: Double -> IO Feedback -> IO Feedback
-timed timeLimit test =
-  fromMaybe (errorFeedback True "Program failed to run within time limit." Nothing)
-    <$> timeout (floor $ timeLimit * 1_000_000) test
+timed timeLimit =
+  fmap (fromMaybe (errorFeedback True "Program failed to run within time limit." Nothing))
+    . timeout (floor $ timeLimit * 1_000_000)
 
 -- \* Utils
 
