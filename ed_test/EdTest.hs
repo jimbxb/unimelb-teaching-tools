@@ -1,8 +1,9 @@
 -- File: EdTest.hs
--- Purpose: Custom Ed testing tool.
+-- Purpose: Ed testing tool.
+-- Author: James Barnes
 
--- Complie and run test individually, using Ed's custom test format.
--- run command: ghc -O2 EdTest.hs > /dev/null && ./EdTest
+-- Complie and run test individually, using Ed's custom test method.
+-- run command: ghc -v0 -O2 EdTest && ./EdTest
 
 import Control.Arrow (Arrow (first, second))
 import Control.Exception (SomeException, handle)
