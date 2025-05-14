@@ -21,15 +21,22 @@ import Text.Read (readMaybe)
 
 tests :: [Test]
 tests =
-  [ validationTest "Validation test" (scoredTest "0"),
-    test "Real test" (scoredTest "1")
+  [ validationTest "Validation test" (expected "0"),
+    test "Real test" (scored "1")
   ]
+  where 
+    compile i = compileHaskell (dir i </> "Main.hs") (exe i)
+    -- compile i = compileProlog (dir i </> "main.pl") (exe i)
+    expected i = compile i $ timed testTime $ runExpected (dir i </> "expected.txt") (exe i) []
+    scored i = compile i $ timed testTime $ runScored (exe i) []
+    dir i = "." </> i
+    exe i = dir i </> "out"
 
 testTime :: Double
 testTime = 5.0
 
 testScore :: Double
-testScore = 10.0
+testScore = 1.0
 
 testThreshold :: Double
 testThreshold = testScore / 2
@@ -40,19 +47,6 @@ capTestScores = True
 testPrivacy :: Privacy
 testPrivacy = Private
 
-expectedTest :: String -> IO Feedback
-expectedTest i = preprocess dir out $ timed testTime $ expected (dir </> "expected.txt") out
-  where
-    dir = "." </> i; out = dir </> "out"
-
-scoredTest :: String -> IO Feedback
-scoredTest i = preprocess dir out $ timed testTime $ scored out
-  where
-    dir = "." </> i; out = dir </> "out"
-
-preprocess :: FilePath -> FilePath -> IO Feedback -> IO Feedback
--- preprocess dir = compileProlog (dir </> "main.pl")
-preprocess dir = compileHaskell (dir </> "Main.hs")
 
 main :: IO ()
 main = do
@@ -104,7 +98,7 @@ data Feedback = Feedback
 data Result
   = Result
   { passed :: Bool,
-    test_ :: Test,
+    testcase :: Test,
     output :: Feedback
   }
 
@@ -112,7 +106,7 @@ instance Show Result where
   show
     Result
       { passed,
-        test_ = Test {name, privacy, visibility, minScore, maxScore},
+        testcase = Test {name, privacy, visibility, minScore, maxScore},
         output = Feedback {ok, score, feedback, observedOutput, expectedOutput}
       } =
       json
@@ -130,7 +124,8 @@ instance Show Result where
         ]
 
 -- Normalise scores for tests with given feedback.
--- If capScore is True, add a negatively scored test if the scores exceed the max score
+-- If capScore is True, add a negatively scored result if the total score exceeds the max score,
+-- or a positivly scored result if below zero
 normaliseResults :: Bool -> [(Test, Feedback)] -> [Result]
 normaliseResults capScore = adjust . map normScore
   where
@@ -143,15 +138,18 @@ normaliseResults capScore = adjust . map normScore
     adjust results
       | capScore =
           results
-            ++ [ Result True (test "Score adjustment" (simple "echo")) {maxScore = 0} $
+            ++ [ Result True (test "Score adjustment" (runSimple "echo" [])) {maxScore = 0} $
                    if totalScore > totalMaxScore
                      then successFeedback ("Score exceeded maximum allowed score: " ++ double totalScore) (totalMaxScore - totalScore)
-                     else successFeedback "Score did not exceed maximum allowed score" 0.0
+                     else
+                       if totalScore < 0
+                         then successFeedback ("Score was below zero: " ++ double totalScore) (-totalScore)
+                         else successFeedback "Score did not require adjustment" 0.0
                ]
       | otherwise = results
       where
         totalScore = sum $ map (score . output) results
-        totalMaxScore = sum $ map (maxScore . test_) results
+        totalMaxScore = sum $ map (maxScore . testcase) results
 
 runTest :: Test -> IO Feedback
 runTest Test {runner} =
@@ -176,30 +174,36 @@ compileProlog mainFile out = compile "swipl" ["-O", "-g", "go", "-t", "halt", "-
 -- \* Run tests
 
 -- Provide feedback based on the stdout of the program
-runFeedback :: (String -> IO Feedback) -> FilePath -> IO Feedback
-runFeedback feedback exe =
+runFeedback :: (String -> IO Feedback) -> FilePath -> [String] -> IO Feedback
+runFeedback feedback exe args =
   handled True "Runtime exception occured." $ do
-    (code, out, _) <- exec exe []
+    (code, out, err) <- exec exe args
     if code == ExitSuccess
       then feedback out
-      else return $ errorFeedback True "Program exitted with a non-zero exit code." $ Just out
+      else return $ errorFeedback True "Program exitted with a non-zero exit code." $ Just $ out ++ "\n" ++ err
 
 -- Suceed if program executes sucessfully, with exit code 0
-simple :: FilePath -> IO Feedback
-simple = runFeedback (const $ return $ successFeedback "Program ran successfully." infinity)
+runSimple :: FilePath -> [String] -> IO Feedback
+runSimple = runFeedback (const $ return $ successFeedback "Code ran successfully." infinity)
 
--- Compare expected output of program with an expected file, suceeding iff they match
-expected :: FilePath -> FilePath -> IO Feedback
-expected expectedFile = runFeedback $ (readFile expectedFile <&>) . expectedFeedback
+-- Compare output of program with contents of a file, suceeding iff they match
+runExpected :: FilePath -> FilePath -> [String] -> IO Feedback
+runExpected expectedFile = runFeedback ((readFile expectedFile <&>) . expectedFeedback)
+
+-- Compare output of program with a string, suceeding iff they match
+runExpectedString :: String -> FilePath -> [String] -> IO Feedback
+runExpectedString expectedOutput = runFeedback $ return . (`expectedFeedback` expectedOutput)
 
 -- Run the program, reading the feedback and score from stdout
 -- score is the last line, pared as a double, feedback is the rest
-scored :: FilePath -> IO Feedback
-scored =
-  runFeedback $ \out ->
-    return $ case first readMaybe <$> uncons (reverse (lines out)) of
-      Just (Just score, feedback) -> successFeedback (unlines (reverse feedback)) score
-      _ -> errorFeedback False "Unknown error parsing output." $ Just out
+runScored :: FilePath -> [String] -> IO Feedback
+runScored =
+  runFeedback
+    ( \out ->
+        return $ case first readMaybe <$> uncons (reverse (lines out)) of
+          Just (Just score, feedback) -> successFeedback (unlines (reverse feedback)) score
+          _ -> errorFeedback False "Unknown error parsing output." $ Just out
+    )
 
 -- limit the time for some feedback, in seconds
 timed :: Double -> IO Feedback -> IO Feedback
